@@ -36,5 +36,9 @@ ffmpeg-python>=0.2.0
 # torch>=2.0.0
 # torchaudio>=2.0.0
 
+# --- Discord bot ---
+discord.py>=2.3.0
+python-dotenv>=1.0.0
+
 # --- utilities ---
 huggingface-hub>=0.20.0
