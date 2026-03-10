@@ -38,6 +38,9 @@ The fastest way to use Transcriptor-bot is through Discord. Follow these steps:
    - `Send Messages`
    - `Attach Files`
    - `Read Message History`
+   - `Connect`
+   - `Speak`
+   - `Use Voice Activity`
 4. Copy the generated URL at the bottom and open it in your browser.
 5. Select your server and click **Authorize**.
 
@@ -78,6 +81,7 @@ Now edit `.env` and fill in your tokens:
 ```env
 DISCORD_BOT_TOKEN=paste_your_discord_bot_token_here
 HF_TOKEN=hf_paste_your_huggingface_token_here
+RECORDINGS_DIR=recordings
 ```
 
 ### 5. Run the Bot
@@ -109,6 +113,23 @@ The bot will:
 4. Reply with the full speaker-labelled transcript and attach output files.
 
 **Supported audio formats:** `.wav`, `.mp3`, `.m4a`, `.flac`, `.ogg`, `.webm`, `.mp4`
+
+To record a live Discord meeting audio into a local/Colab folder:
+
+1. Join a voice channel.
+2. Run:
+
+```
+/record
+```
+
+3. When the meeting ends, run:
+
+```
+/stop
+```
+
+The bot saves a `.wav` file in `RECORDINGS_DIR` (default: `recordings/`) and also uploads that file in the channel.
 
 ---
 
