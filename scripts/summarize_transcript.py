@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""
+summarize_transcript.py – Generate meeting summary from speaker transcript using Ollama.
+
+Default model:
+    hf.co/unsloth/Qwen3.5-9B-GGUF:Q4_K_M  (fallback: qwen3.5:4b)
+
+Example
+-------
+python scripts/summarize_transcript.py \
+    --transcript recordings/transcripts/meeting-123.speaker_transcript.txt \
+    --out recordings/summaries/meeting-123-summary.md
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import logging
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+# Allow running from repo root without installing package.
+_repo_root = Path(__file__).resolve().parent.parent
+if str(_repo_root) not in sys.path:
+    sys.path.insert(0, str(_repo_root))
+
+from transcriptor_bot.summarize import summarize_transcript_with_ollama
+
+
+def _get_env(name: str, default: str | None = None, required: bool = False) -> str:
+    value = os.environ.get(name, default or "")
+    if required and not value:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value
+
+
+def _fallback_turns_from_segments(segments: list[dict]) -> list[dict]:
+    turns: list[dict] = []
+    for segment in segments:
+        text = str(segment.get("text", "")).strip()
+        if not text:
+            continue
+        turns.append(
+            {
+                "speaker": "UNKNOWN",
+                "start": segment.get("start"),
+                "end": segment.get("end"),
+                "text": text,
+            }
+        )
+    return turns
+
+
+def _transcribe_audio_to_local_transcript(
+    audio_path: Path,
+    transcripts_dir: Path,
+    min_speakers: int,
+    max_speakers: int,
+) -> Path:
+    from transcriptor_bot.assign import (
+        assign_words_to_speakers,
+        build_speaker_turns,
+        render_transcript,
+        turns_to_json,
+    )
+    from transcriptor_bot.diarize import run_pyannote_diarization
+    from transcriptor_bot.transcribe import run_whisperx_transcribe
+
+    log = logging.getLogger("summarize_transcript.transcribe")
+
+    hf_token = _get_env("HF_TOKEN", required=True)
+    model_size = _get_env("WHISPER_MODEL", "large-v3-turbo")
+    device = _get_env("DEVICE", "cuda")
+    compute_type = _get_env("COMPUTE_TYPE", "float16")
+    language = _get_env("WHISPER_LANGUAGE", "pt")
+    batch_size = int(_get_env("BATCH_SIZE", "16"))
+
+    log.info("Step 1/3 – WhisperX transcription from audio: %s", audio_path)
+    whisperx_result = run_whisperx_transcribe(
+        audio_path=str(audio_path),
+        model_size=model_size,
+        device=device,
+        compute_type=compute_type,
+        language=language,
+        batch_size=batch_size,
+    )
+
+    if not whisperx_result.get("segments"):
+        raise RuntimeError("No speech was detected in the audio.")
+
+    log.info("Step 2/3 – Speaker diarization")
+    diarization, _ = run_pyannote_diarization(
+        audio_path=str(audio_path),
+        hf_token=hf_token,
+        min_speakers=min_speakers,
+        max_speakers=max_speakers,
+    )
+
+    log.info("Step 3/3 – Build speaker transcript")
+    word_segments = whisperx_result.get("word_segments", [])
+    if word_segments:
+        assigned_words = assign_words_to_speakers(word_segments=word_segments, diarization=diarization)
+        turns = build_speaker_turns(assigned_words)
+    else:
+        turns = _fallback_turns_from_segments(whisperx_result.get("segments", []))
+
+    if not turns:
+        raise RuntimeError("Failed to produce transcript text from the audio.")
+
+    transcript_text = render_transcript(turns)
+    transcript_json = turns_to_json(turns)
+
+    transcripts_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    base = f"{audio_path.stem}-{timestamp}"
+
+    txt_path = transcripts_dir / f"{base}.speaker_transcript.txt"
+    json_path = transcripts_dir / f"{base}.speaker_transcript.json"
+    txt_path.write_text(transcript_text, encoding="utf-8")
+    json_path.write_text(transcript_json, encoding="utf-8")
+
+    log.info("Transcript saved -> %s", txt_path)
+    log.info("Transcript JSON saved -> %s", json_path)
+    return txt_path
+
+
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Summarize a speaker transcript with Ollama local model.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+
+    source_group = parser.add_mutually_exclusive_group(required=True)
+    source_group.add_argument(
+        "--transcript",
+        metavar="PATH",
+        help="Path to transcript file (.txt or .json).",
+    )
+    source_group.add_argument(
+        "--audio",
+        metavar="PATH",
+        help="Path to input audio file. Script will transcribe first, then summarize.",
+    )
+
+    parser.add_argument(
+        "--out",
+        default=None,
+        metavar="PATH",
+        help="Output markdown/txt summary file path. If omitted, auto-generated.",
+    )
+    parser.add_argument(
+        "--model",
+        default="hf.co/unsloth/Qwen3.5-9B-GGUF:Q4_K_M",
+        metavar="MODEL",
+        help="Ollama model tag (e.g. hf.co/...:UD-Q4_K_XL).",
+    )
+    parser.add_argument(
+        "--fallback-model",
+        default="qwen3.5:4b",
+        metavar="MODEL",
+        help="Fallback Ollama model when the primary model fails.",
+    )
+    parser.add_argument(
+        "--no-model-fallback",
+        action="store_true",
+        help="Disable model fallback and use only --model.",
+    )
+    parser.add_argument(
+        "--no-auto-pull",
+        action="store_true",
+        help="Do not auto-download missing Ollama model; fail with instructions instead.",
+    )
+    parser.add_argument(
+        "--pull-timeout",
+        type=int,
+        default=1800,
+        metavar="SECONDS",
+        help="Timeout for `ollama pull` in seconds.",
+    )
+    parser.add_argument(
+        "--run-timeout",
+        type=int,
+        default=1800,
+        metavar="SECONDS",
+        help="Timeout for `ollama run` in seconds.",
+    )
+    parser.add_argument(
+        "--no-cpu-fallback",
+        action="store_true",
+        help="Disable automatic CPU retry when GPU allocation fails.",
+    )
+    parser.add_argument(
+        "--language",
+        default="pt-BR",
+        metavar="LANG",
+        help="Summary language instruction (e.g. pt-BR, en).",
+    )
+    parser.add_argument(
+        "--transcripts-dir",
+        default="recordings/transcripts",
+        metavar="DIR",
+        help="Where to store transcript files when --audio is used.",
+    )
+    parser.add_argument("--min-speakers", type=int, default=2, metavar="N", help="Min speakers for diarization.")
+    parser.add_argument("--max-speakers", type=int, default=3, metavar="N", help="Max speakers for diarization.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logs.")
+    return parser.parse_args(argv)
+
+
+def _setup_logging(verbose: bool) -> None:
+    logging.basicConfig(
+        format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
+        datefmt="%H:%M:%S",
+        level=logging.DEBUG if verbose else logging.INFO,
+        stream=sys.stderr,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    _setup_logging(args.verbose)
+
+    transcript_path: Path
+    if args.audio:
+        audio_path = Path(args.audio).expanduser().resolve()
+        if not audio_path.exists():
+            logging.getLogger("summarize_transcript").error("Audio file not found: %s", audio_path)
+            return 1
+        try:
+            transcript_path = _transcribe_audio_to_local_transcript(
+                audio_path=audio_path,
+                transcripts_dir=Path(args.transcripts_dir).expanduser().resolve(),
+                min_speakers=args.min_speakers,
+                max_speakers=args.max_speakers,
+            )
+        except Exception as exc:
+            logging.getLogger("summarize_transcript").error("Failed during audio transcription stage: %s", exc)
+            return 1
+    else:
+        transcript_path = Path(args.transcript).expanduser().resolve()
+        if not transcript_path.exists():
+            logging.getLogger("summarize_transcript").error("Transcript file not found: %s", transcript_path)
+            return 1
+
+    if args.out:
+        output_path = Path(args.out).expanduser().resolve()
+    else:
+        summaries_dir = Path("recordings/summaries").resolve()
+        summaries_dir.mkdir(parents=True, exist_ok=True)
+        stem = transcript_path.stem.replace(".speaker_transcript", "")
+        output_path = summaries_dir / f"{stem}.meeting_summary.md"
+
+    try:
+        summarize_transcript_with_ollama(
+            transcript_path=str(transcript_path),
+            output_path=str(output_path),
+            model=args.model,
+            fallback_model=None if args.no_model_fallback else args.fallback_model,
+            language=args.language,
+            auto_pull=not args.no_auto_pull,
+            pull_timeout_seconds=args.pull_timeout,
+            run_timeout_seconds=args.run_timeout,
+            allow_cpu_fallback=not args.no_cpu_fallback,
+        )
+    except Exception as exc:
+        logging.getLogger("summarize_transcript").error("Failed to generate summary: %s", exc)
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

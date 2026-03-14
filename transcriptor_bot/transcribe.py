@@ -22,10 +22,10 @@ logger = logging.getLogger(__name__)
 
 def run_whisperx_transcribe(
     audio_path: str,
-    model_size: str = "base",
-    device: str = "cpu",
-    compute_type: str = "auto",
-    language: Optional[str] = None,
+    model_size: str = "medium",
+    device: str = "cuda",
+    compute_type: str = "float16",
+    language: Optional[str] = "pt",
     batch_size: int = 16,
 ) -> dict:
     """Transcribe *audio_path* with WhisperX and return aligned word timestamps.
@@ -36,7 +36,7 @@ def run_whisperx_transcribe(
         Path to the audio file (wav/mp3/m4a/…).
     model_size:
         Whisper model size – ``"tiny"``, ``"base"``, ``"small"``, ``"medium"``,
-        ``"large-v2"``, ``"large-v3"``.  Defaults to ``"base"``.
+        ``"large-v2"``, ``"Medium"``.  Defaults to ``"base"``.
     device:
         ``"cpu"`` or ``"cuda"``.
     compute_type:
@@ -95,9 +95,16 @@ def run_whisperx_transcribe(
         return_char_alignments=False,
     )
 
-    # free GPU memory
+    # free GPU memory so Ollama can allocate VRAM for the LLM
     del model, align_model
     gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+    except Exception:
+        pass
 
     return {
         "segments": aligned.get("segments", []),

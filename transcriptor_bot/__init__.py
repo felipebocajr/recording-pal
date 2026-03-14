@@ -1,10 +1,13 @@
 """
-transcriptor_bot – WhisperX + pyannote.audio meeting transcription package.
+transcriptor_bot – Meeting transcription & summarization package.
 
-Typical usage:
-    from transcriptor_bot.transcribe import run_whisperx_transcribe
-    from transcriptor_bot.diarize import run_pyannote_diarization
-    from transcriptor_bot.assign import assign_words_to_speakers, build_speaker_turns, render_transcript
+WhisperX (ASR) + pyannote.audio (diarization) + Ollama (LLM summary).
+
+Typical usage (via GUI):
+    python recorder_app.py
+
+Typical usage (via CLI):
+    python scripts/summarize_transcript.py --audio recording.mp3
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

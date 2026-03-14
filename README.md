@@ -1,69 +1,37 @@
-# Transcriptor-bot
+# Meeting Recorder & Summarizer
 
-A toolkit for **speaker-diarized meeting transcription** using
-[WhisperX](https://github.com/m-bain/whisperx) (ASR + word alignment) and
-[pyannote.audio](https://github.com/pyannote/pyannote-audio) (speaker diarization).
+A Linux desktop app for **recording meetings, speaker-diarized transcription, and LLM summarization** — all from a single GUI window.
 
-Works as a **Discord bot**, a **CLI tool**, a **Python library**, or a **Google Colab notebook**.
-
-Given a **single mixed audio file** from a meeting (multiple speakers), the
-pipeline produces:
+Core pipeline:
+[ffmpeg + PulseAudio](https://ffmpeg.org/) (audio capture) →
+[WhisperX](https://github.com/m-bain/whisperx) (ASR + word alignment) →
+[pyannote.audio](https://github.com/pyannote/pyannote-audio) (speaker diarization) →
+[Ollama](https://ollama.com) (local LLM summarization with `hf.co/unsloth/Qwen3.5-9B-GGUF:Q4_K_M`)
 
 | Artifact | Description |
 |---|---|
-| `whisperx_result.json` | Full transcription segments + word-level timestamps |
-| `diarization.rttm` | Speaker turns in RTTM format |
-| `speaker_transcript.txt` | Human-readable, speaker-labelled transcript |
-| `speaker_transcript.json` | Machine-readable list of speaker turns |
+| `recording_YYYYMMDD_HHMMSS.mp3` | Mixed mic + desktop audio recording |
+| `*.speaker_transcript.txt` | Human-readable, speaker-labelled transcript |
+| `*.speaker_transcript.json` | Machine-readable list of speaker turns |
+| `*.meeting_summary.md` | LLM-generated structured meeting summary |
 
 ---
 
-## 🤖 Discord Bot Setup (Step by Step)
+## Prerequisites
 
-The fastest way to use Transcriptor-bot is through Discord. Follow these steps:
-
-### 1. Create a Discord Bot
-
-1. Go to the [Discord Developer Portal](https://discord.com/developers/applications).
-2. Click **New Application** → give it a name (e.g. "Transcriptor Bot") → **Create**.
-3. In the left sidebar, click **Bot**.
-4. Click **Reset Token** → copy the token. **Save it — you'll need it soon.**
-5. Scroll down and enable **Message Content Intent** (required to read commands).
-
-### 2. Invite the Bot to Your Server
-
-1. In the Developer Portal, go to **OAuth2 → URL Generator**.
-2. Under **Scopes**, check `bot`.
-3. Under **Bot Permissions**, check:
-   - `Send Messages`
-   - `Attach Files`
-   - `Read Message History`
-   - `Connect`
-   - `Speak`
-   - `Use Voice Activity`
-4. Copy the generated URL at the bottom and open it in your browser.
-5. Select your server and click **Authorize**.
-
-### 3. Get a Hugging Face Token
-
-1. Create a free account at <https://huggingface.co/join>.
-2. Generate an access token at <https://huggingface.co/settings/tokens> (type: **Read**).
-3. Accept the licence for **both** models (one-time, free):
-   - <https://huggingface.co/pyannote/speaker-diarization-3.1>
-   - <https://huggingface.co/pyannote/segmentation-3.0>
-
-### 4. Install & Configure
+### System packages
 
 ```bash
-# Clone the repo
-git clone https://github.com/felipebocajr/Transcriptor-bot.git
-cd Transcriptor-bot
+sudo apt install ffmpeg pulseaudio python3-tk
+```
 
-# Install system dependency
-#   macOS:  brew install ffmpeg
-#   Ubuntu: sudo apt-get install ffmpeg
+### Python environment
 
-# Install Python dependencies
+```bash
+# Create & activate venv
+python3 -m venv venv && source venv/bin/activate
+
+# Install Python deps
 pip install -r requirements.txt
 pip install git+https://github.com/m-bain/whisperx.git
 
@@ -71,196 +39,146 @@ pip install git+https://github.com/m-bain/whisperx.git
 # pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
 # For CPU only:
 # pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-
-# Create your .env file from the template
-cp .env.example .env
 ```
 
-Now edit `.env` and fill in your tokens:
+### Ollama (for LLM summarization)
 
-```env
-DISCORD_BOT_TOKEN=paste_your_discord_bot_token_here
-HF_TOKEN=hf_paste_your_huggingface_token_here
-RECORDINGS_DIR=recordings
-```
-
-### 5. Run the Bot
+Install from <https://ollama.com/download>, then pull the default model:
 
 ```bash
-python scripts/run_discord_bot.py
+ollama pull hf.co/unsloth/Qwen3.5-9B-GGUF:Q4_K_M
 ```
 
-You should see a log message confirming the bot is online.
+The smaller fallback model (`qwen3.5:4b`) is auto-pulled if the primary fails, but you can pre-fetch it:
 
-### 6. Use the Bot in Discord
-
-Upload an audio file to any channel the bot can see and type:
-
-```
-!transcribe
+```bash
+ollama pull qwen3.5:4b
 ```
 
-Or specify speaker counts:
-
-```
-!transcribe 2 5
-```
-
-The bot will:
-1. Download the attached audio file.
-2. Transcribe it with WhisperX.
-3. Run speaker diarization with pyannote.
-4. Reply with the full speaker-labelled transcript and attach output files.
-
-**Supported audio formats:** `.wav`, `.mp3`, `.m4a`, `.flac`, `.ogg`, `.webm`, `.mp4`
-
-To record a live Discord meeting audio into a local/Colab folder:
-
-1. Join a voice channel.
-2. Run:
-
-```
-/record
-```
-
-3. When the meeting ends, run:
-
-```
-/stop
-```
-
-The bot saves a `.wav` file in `RECORDINGS_DIR` (default: `recordings/`) and also uploads that file in the channel.
-
----
-
-## Quick Start (Google Colab)
-
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/felipebocajr/Transcriptor-bot/blob/main/notebooks/colab_whisperx_pyannote_diarization.ipynb)
-
-1. Click the badge above to open the notebook in Colab.
-2. Select **Runtime → Change runtime type → T4 GPU** for best performance.
-3. Follow the steps in the notebook:
-   - Install dependencies (ffmpeg + Python packages).
-   - Set your Hugging Face token (see [Getting an HF Token](#3-get-a-hugging-face-token)).
-   - Upload or point to your audio file.
-   - Set `MIN_SPEAKERS` / `MAX_SPEAKERS` (default: 3).
-   - Run all cells — outputs appear in `/content/outputs/`.
-   - Download the zipped results.
-
----
-
-## Prerequisites
-
-### Getting a Hugging Face Token
-
-pyannote.audio models are **gated** (free, but require consent):
+### Hugging Face token (for pyannote diarization)
 
 1. Create a free account at <https://huggingface.co/join>.
-2. Generate an access token at <https://huggingface.co/settings/tokens>
-   (type: **Read**).
-3. Accept the licence for **both** models (one-time):
+2. Generate an access token at <https://huggingface.co/settings/tokens> (type: **Read**).
+3. Accept the licence for **both** models (one-time, free):
    - <https://huggingface.co/pyannote/speaker-diarization-3.1>
    - <https://huggingface.co/pyannote/segmentation-3.0>
-
-### Setting `HF_TOKEN`
-
-The token can be provided in several ways (the code tries them in order):
-
-| Method | How |
-|---|---|
-| **`.env` file** (recommended for the bot) | Add `HF_TOKEN=hf_…` to your `.env` file |
-| **Colab Secrets** (recommended for Colab) | Click the 🔑 icon in the left sidebar, add secret `HF_TOKEN`, enable notebook access |
-| **Environment variable** | `export HF_TOKEN=hf_…` before running the script |
-| **CLI flag** | `--hf-token hf_…` when calling `diarize_meeting.py` |
-
----
-
-## Local / CLI Usage
-
-### Installation
-
-```bash
-# 1. Clone the repo
-git clone https://github.com/felipebocajr/Transcriptor-bot.git
-cd Transcriptor-bot
-
-# 2. Install system dependency (macOS/Linux)
-#    macOS:  brew install ffmpeg
-#    Ubuntu: sudo apt-get install ffmpeg
-
-# 3. Install Python deps
-pip install git+https://github.com/m-bain/whisperx.git
-pip install pyannote.audio huggingface-hub
-
-# For GPU (CUDA 11.8 example):
-# pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
-# For CPU only:
-# pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-```
-
-### Running the CLI
+4. Export the token before launching the app:
 
 ```bash
 export HF_TOKEN=hf_your_token_here
-
-python scripts/diarize_meeting.py \
-    --audio  path/to/meeting.wav \
-    --min-speakers 3 \
-    --max-speakers 3 \
-    --out    outputs/
-```
-
-All four output files will be written to `outputs/`.
-
-#### Full CLI options
-
-```
-usage: diarize_meeting.py [-h] --audio PATH [--hf-token TOKEN]
-                          [--min-speakers N] [--max-speakers N]
-                          [--out DIR] [--model MODEL] [--device {cpu,cuda}]
-                          [--compute-type {auto,float16,int8,float32}]
-                          [--language LANG] [--batch-size N] [-v]
-
-options:
-  --audio PATH          Path to the input audio file (wav/mp3/m4a/…)
-  --hf-token TOKEN      Hugging Face access token (or set HF_TOKEN env var)
-  --min-speakers N      Minimum number of speakers (default: 3)
-  --max-speakers N      Maximum number of speakers (default: 3)
-  --out DIR             Output directory (default: outputs/)
-  --model MODEL         WhisperX model size (default: base)
-  --device {cpu,cuda}   Device (default: cpu)
-  --compute-type …      Quantisation type (default: auto)
-  --language LANG       Language code, e.g. "en" (default: auto-detect)
-  --batch-size N        WhisperX batch size (default: 16)
-  -v, --verbose         Enable verbose logging
 ```
 
 ---
 
-## Python API
+## Launch
 
-```python
-from transcriptor_bot.transcribe import run_whisperx_transcribe
-from transcriptor_bot.diarize    import run_pyannote_diarization
-from transcriptor_bot.assign     import (
-    assign_words_to_speakers,
-    build_speaker_turns,
-    render_transcript,
-)
-
-# 1. Transcribe + align
-result = run_whisperx_transcribe("meeting.wav", model_size="base", device="cpu")
-
-# 2. Diarize
-diarization, rttm_lines = run_pyannote_diarization(
-    "meeting.wav", hf_token="hf_…", min_speakers=3, max_speakers=3
-)
-
-# 3. Assign & render
-words   = assign_words_to_speakers(result["word_segments"], diarization)
-turns   = build_speaker_turns(words)
-print(render_transcript(turns))
+```bash
+python recorder_app.py
 ```
+
+---
+
+## Audio Device Configuration
+
+The app defaults to the following PulseAudio devices (Logitech G522 headset):
+
+| Source | Default device name |
+|---|---|
+| Microphone | `alsa_input.usb-Logitech_G522_LIGHTSPEED_-_Wireless_Mode_0000000000000000-00.mono-fallback` |
+| Desktop monitor | `alsa_output.usb-Logitech_G522_LIGHTSPEED_-_Wireless_Mode_0000000000000000-00.analog-stereo.monitor` |
+
+To use different devices, set environment variables before launching:
+
+```bash
+export RECORDER_MIC="your_pulseaudio_source_name"
+export RECORDER_MONITOR="your_pulseaudio_monitor_name"
+export RECORDER_OUTPUT_DIR="$HOME/recordings"   # optional, default: ~/recordings
+```
+
+Find your device names with:
+
+```bash
+pactl list sources short
+```
+
+---
+
+## Recording Controls
+
+| Button | Available in | Action |
+|---|---|---|
+| **Start** | Idle / Stopped | Launches `ffmpeg`, begins recording mic + desktop mixed to mono MP3 |
+| **Pause** | Recording | Sends `SIGSTOP` to freeze ffmpeg (timer stops) |
+| **Resume** | Paused | Sends `SIGCONT` to continue recording |
+| **Stop** | Recording / Paused | Sends `SIGINT` for graceful shutdown; saves file |
+| **Summarize** | Stopped | Runs the full transcription + LLM summary pipeline on the recording |
+
+### UI State Machine
+
+```
+Idle ──Start──▶ Recording ──Pause──▶ Paused
+                    │                  │
+                    │               Resume
+                    │                  │
+                    └──Stop──▶ Stopped ◀┘
+                                  │
+                               Summarize
+                                  │
+                                  ▼
+                             Summarizing ──done──▶ Stopped
+```
+
+---
+
+## Output
+
+Recordings are saved to `~/recordings/` (or `RECORDER_OUTPUT_DIR`) with the format:
+
+```
+recording_YYYYMMDD_HHMMSS.mp3
+```
+
+After clicking **Summarize**, the app:
+1. Transcribes the audio with WhisperX + diarizes with pyannote (requires `HF_TOKEN`).
+2. Runs the Ollama LLM to generate a structured summary.
+3. Streams progress in the scrollable output area.
+4. Displays the final summary directly in the window.
+5. Saves transcript + summary files to `~/recordings/transcripts/` and `~/recordings/summaries/`.
+
+---
+
+## CLI Usage
+
+You can also run the summarization pipeline directly from the command line:
+
+### From a transcript file
+
+```bash
+python scripts/summarize_transcript.py \
+   --transcript recordings/transcripts/<your-file>.speaker_transcript.txt \
+   --out recordings/summaries/meeting-summary.md
+```
+
+### From an audio file (transcribe + diarize + summarize)
+
+```bash
+python scripts/summarize_transcript.py \
+   --audio recordings/recording_20260313_150000.mp3 \
+   --min-speakers 1 \
+   --max-speakers 3 \
+   --out recordings/summaries/meeting-summary.md
+```
+
+### Custom model
+
+```bash
+python scripts/summarize_transcript.py \
+   --transcript <file> \
+   --model <your-ollama-model-tag> \
+   --out recordings/summaries/meeting-summary.md
+```
+
+Default: `hf.co/unsloth/Qwen3.5-9B-GGUF:Q4_K_M` → fallback: `qwen3.5:4b`
 
 ---
 
@@ -268,8 +186,8 @@ print(render_transcript(turns))
 
 | Setup | Model | ~60 min audio |
 |---|---|---|
-| Colab T4 GPU | `large-v2` | ~8–12 min |
-| Colab T4 GPU | `base` | ~2–3 min |
+| GPU (CUDA) | `large-v2` | ~8–12 min |
+| GPU (CUDA) | `base` | ~2–3 min |
 | CPU only | `base` | ~20–40 min |
 | CPU only | `tiny` | ~8–15 min |
 
@@ -282,19 +200,21 @@ print(render_transcript(turns))
 
 ```
 Transcriptor-bot/
-├── notebooks/
-│   └── colab_whisperx_pyannote_diarization.ipynb  ← Colab notebook
-├── transcriptor_bot/                               ← Python package
+├── recorder_app.py                 ← Desktop GUI (primary entry point)
+├── scripts/
+│   └── summarize_transcript.py     ← CLI: transcribe + summarize (also used by GUI)
+├── transcriptor_bot/               ← Python package
 │   ├── __init__.py
 │   ├── transcribe.py   – WhisperX ASR + alignment
 │   ├── diarize.py      – pyannote diarization
 │   ├── assign.py       – word→speaker assignment + rendering
-│   └── bot.py          – Discord bot integration
-├── scripts/
-│   ├── diarize_meeting.py  ← CLI entry point
-│   └── run_discord_bot.py  ← Discord bot entry point
-├── outputs/                ← generated artefacts (git-ignored)
-├── .env.example            ← template for environment variables
+│   └── summarize.py    – Ollama LLM summarization
+├── recordings/                     ← output (git-ignored)
+│   ├── *.mp3
+│   ├── transcripts/
+│   └── summaries/
+├── notebooks/
+│   └── colab_whisperx_pyannote_diarization.ipynb  ← optional Colab notebook
 ├── requirements.txt
 └── README.md
 ```
@@ -305,12 +225,12 @@ Transcriptor-bot/
 
 | Error | Fix |
 |---|---|
-| `Missing required environment variable: DISCORD_BOT_TOKEN` | Add your Discord bot token to `.env` |
-| `Missing required environment variable: HF_TOKEN` | Add your HF token to `.env` |
-| `Privileged intent … not enabled` | Enable **Message Content Intent** in the [Developer Portal](https://discord.com/developers/applications) → Bot |
-| `RuntimeError: No Hugging Face token found` | Set `HF_TOKEN` env var or use Colab Secrets |
+| `HF_TOKEN` not set / pyannote fails | `export HF_TOKEN=hf_…` before launching |
 | `pyannote model access denied (403/401)` | Accept both model licences on the Hub (links above) |
-| CUDA out of memory | Reduce `BATCH_SIZE` in `.env` or switch to a smaller `WHISPER_MODEL` |
-| `ffmpeg not found` | `sudo apt-get install ffmpeg` (Linux) or `brew install ffmpeg` (macOS) |
-| WhisperX import error | Run `pip install git+https://github.com/m-bain/whisperx.git` |
-| Bot is online but doesn't respond | Make sure the bot has permission to read messages in the channel |
+| CUDA out of memory | Set `DEVICE=cpu` or use a smaller `WHISPER_MODEL` |
+| `Failed to generate summary: Ollama is not installed ...` | Install Ollama: <https://ollama.com/download> |
+| `Failed to generate summary: Ollama command failed ...` | Test manually: `ollama run hf.co/unsloth/Qwen3.5-9B-GGUF:Q4_K_M` |
+| `ffmpeg not found` | `sudo apt install ffmpeg` |
+| `_tkinter` / `python3-tk` import error | `sudo apt install python3-tk` |
+| ffmpeg exits immediately after Start | Wrong PulseAudio device name — run `pactl list sources short` and set `RECORDER_MIC` / `RECORDER_MONITOR` env vars |
+| WhisperX import error | `pip install git+https://github.com/m-bain/whisperx.git` |

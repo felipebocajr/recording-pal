@@ -1,12 +1,10 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# requirements.txt – Transcriptor-bot
+# requirements.txt – Meeting Recorder & Summarizer
 #
-# Compatible with Python 3.10 / 3.11 (Google Colab as of 2024-2025).
+# Compatible with Python 3.10+.
 #
 # ⚠️  PyTorch notes
-#   • Colab usually ships with CUDA-enabled torch; do NOT reinstall unless the
-#     version below conflicts with your environment.
-#   • For CPU-only Colab or local dev: pip install torch torchaudio --index-url
+#   • For CPU-only:  pip install torch torchaudio --index-url
 #     https://download.pytorch.org/whl/cpu
 #   • For CUDA 11.8:  pip install torch torchaudio --index-url
 #     https://download.pytorch.org/whl/cu118
@@ -15,31 +13,32 @@
 # --- core ASR ---
 # whisperx is not on PyPI; install from source:
 #   pip install git+https://github.com/m-bain/whisperx.git
-# The line below is a placeholder so pip can track the dependency conceptually.
-# Actual installation command is in the Colab notebook and README.
-# whisperx @ git+https://github.com/m-bain/whisperx.git
 
 # faster-whisper is pulled in by whisperx, pinned for stability
 faster-whisper>=1.0.0
 
 # --- speaker diarization ---
-pyannote.audio>=3.1.0
+pyannote.audio>=3.2.0
 
 # --- audio I/O ---
-# ffmpeg-python is a thin Python wrapper; the system ffmpeg binary is also needed
-# (installed via apt in Colab / brew on macOS / apt on Ubuntu)
+# ffmpeg-python is a thin Python wrapper; the system ffmpeg binary is also
+# needed (sudo apt install ffmpeg)
 ffmpeg-python>=0.2.0
 
 # --- ML / tensor ---
-# Torch & torchaudio are listed here for reference but should be installed
+# Torch & torchaudio are listed for reference but should be installed
 # separately with the correct CUDA wheel for your environment (see note above).
 # torch>=2.0.0
 # torchaudio>=2.0.0
 
-# --- Discord bot ---
-discord.py>=2.3.0
-discord-ext-voice-recv
-python-dotenv>=1.0.0
-
 # --- utilities ---
 huggingface-hub>=0.20.0
+
+# --- GUI ---
+# tkinter is part of Python's standard library (sudo apt install python3-tk).
+# The recorder_app.py GUI also requires system packages:
+#   sudo apt install ffmpeg pulseaudio
+
+# --- summarization ---
+# Uses Ollama runtime (https://ollama.com/download); no extra Python package
+# is needed. Default model: hf.co/unsloth/Qwen3.5-9B-GGUF:Q4_K_M

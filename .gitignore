@@ -1,6 +1,15 @@
 # Generated outputs (not committed)
 outputs/
 
+# Personal recordings / transcripts / summaries
+recordings/
+*.mp3
+*.wav
+*.m4a
+*.ogg
+*.flac
+*.rttm
+
 # Python
 __pycache__/
 *.py[cod]
@@ -23,6 +32,10 @@ env/
 
 # Environment / secrets
 .env
+
+# IDE
+.vscode/
+.claude/
 
 # OS
 .DS_Store

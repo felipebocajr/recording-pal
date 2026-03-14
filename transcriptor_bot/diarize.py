@@ -23,6 +23,44 @@ logger = logging.getLogger(__name__)
 _RTTM_TEMPLATE = "SPEAKER {file_id} 1 {start:.3f} {duration:.3f} <NA> <NA> {speaker} <NA> <NA>"
 
 
+def _load_audio_for_pyannote(audio_path: str) -> dict:
+    """Load audio into memory for pyannote when built-in decoding is unavailable."""
+    try:
+        import torchaudio
+    except ImportError as exc:
+        raise RuntimeError(
+            "pyannote could not decode audio and torchaudio is unavailable for fallback loading. "
+            "Install torchaudio or fix torchcodec."
+        ) from exc
+
+    waveform, sample_rate = torchaudio.load(audio_path)
+    return {"waveform": waveform, "sample_rate": sample_rate}
+
+
+def _get_annotation_from_output(diarization: object) -> object:
+    """Normalize pyannote output across versions.
+
+    Recent pyannote releases may return a `DiarizeOutput` object instead of a
+    bare `Annotation`. Prefer `exclusive_speaker_diarization` for downstream
+    transcript alignment and fall back to `speaker_diarization`.
+    """
+    if hasattr(diarization, "itertracks"):
+        return diarization
+
+    exclusive = getattr(diarization, "exclusive_speaker_diarization", None)
+    if exclusive is not None and hasattr(exclusive, "itertracks"):
+        return exclusive
+
+    speaker_diarization = getattr(diarization, "speaker_diarization", None)
+    if speaker_diarization is not None and hasattr(speaker_diarization, "itertracks"):
+        return speaker_diarization
+
+    raise TypeError(
+        "Unsupported pyannote diarization output: expected Annotation-like object "
+        "with `itertracks`, `exclusive_speaker_diarization`, or `speaker_diarization`."
+    )
+
+
 def run_pyannote_diarization(
     audio_path: str,
     hf_token: Optional[str] = None,
@@ -87,7 +125,7 @@ def run_pyannote_diarization(
     try:
         pipeline = Pipeline.from_pretrained(
             "pyannote/speaker-diarization-3.1",
-            use_auth_token=token,
+            token=token,
         )
     except Exception as exc:
         msg = str(exc)
@@ -116,15 +154,30 @@ def run_pyannote_diarization(
         min_speakers,
         max_speakers,
     )
-    diarization = pipeline(
-        audio_path,
-        min_speakers=min_speakers,
-        max_speakers=max_speakers,
-    )
+    try:
+        diarization = pipeline(
+            audio_path,
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
+        )
+    except NameError as exc:
+        if "AudioDecoder" not in str(exc):
+            raise
+
+        logger.warning(
+            "pyannote built-in audio decoding is unavailable; retrying with torchaudio fallback."
+        )
+        diarization = pipeline(
+            _load_audio_for_pyannote(audio_path),
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
+        )
+
+    diarization_annotation = _get_annotation_from_output(diarization)
 
     # --- build RTTM lines ---
     rttm_lines: list[str] = []
-    for turn, _, speaker in diarization.itertracks(yield_label=True):
+    for turn, _, speaker in diarization_annotation.itertracks(yield_label=True):
         line = _RTTM_TEMPLATE.format(
             file_id=file_id,
             start=turn.start,
@@ -134,4 +187,17 @@ def run_pyannote_diarization(
         rttm_lines.append(line)
 
     logger.info("Diarization complete – %d turns found.", len(rttm_lines))
-    return diarization, rttm_lines
+
+    # free GPU memory so subsequent Ollama model load can allocate VRAM
+    try:
+        import gc
+        import torch
+        del pipeline
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+    except Exception:
+        pass
+
+    return diarization_annotation, rttm_lines
