@@ -172,7 +172,7 @@ Idle ──Start──▶ Recording ──Pause──▶ Paused
 
 ## Output
 
-Recordings are saved to `~/recordings/` (or `RECORDER_OUTPUT_DIR`) with the format:
+Recordings are saved to `~/recordings/audio/` (or `RECORDER_OUTPUT_DIR/audio/`) with the format:
 
 ```
 recording_YYYY-MM-DD_HH-MM-SS.mp3
@@ -205,7 +205,7 @@ python scripts/summarize_transcript.py \
 
 ```bash
 python scripts/summarize_transcript.py \
-   --audio recordings/recording_2026-03-13_15-00-00.mp3 \
+   --audio recordings/audio/recording_2026-03-13_15-00-00.mp3 \
    --min-speakers 1 \
    --max-speakers 3 \
    --out recordings/summaries/meeting-summary.txt
@@ -252,7 +252,8 @@ Transcriptor-bot/
 │   ├── assign.py       – word→speaker assignment + rendering
 │   └── summarize.py    – Ollama LLM summarization
 ├── recordings/                     ← output (git-ignored)
-│   ├── *.mp3
+│   ├── audio/
+│   │   └── *.mp3
 │   ├── transcripts/
 │   └── summaries/
 ├── notebooks/

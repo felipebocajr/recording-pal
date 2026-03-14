@@ -17,7 +17,7 @@ Requirements:
 Environment variables (all optional):
     RECORDER_MIC       – PulseAudio source for microphone (Linux override)
     RECORDER_MONITOR   – PulseAudio source for desktop audio monitor (Linux override)
-  RECORDER_OUTPUT_DIR – directory for recordings  (default: ~/recordings)
+    RECORDER_OUTPUT_DIR – base directory for recorder outputs (default: ~/recordings)
 
 Usage:
   python recorder_app.py
@@ -91,6 +91,7 @@ DESKTOP_MONITOR = os.environ.get(
 RECORDINGS_DIR = Path(
     os.environ.get("RECORDER_OUTPUT_DIR", str(Path.home() / "recordings"))
 )
+AUDIO_RECORDINGS_DIR = RECORDINGS_DIR / "audio"
 
 _REPO_ROOT = Path(__file__).resolve().parent
 _SUMMARIZE_SCRIPT = _REPO_ROOT / "scripts" / "summarize_transcript.py"
@@ -159,6 +160,7 @@ class RecorderApp:
         self._mic_device_var = tk.StringVar(value=os.environ.get("RECORDER_MIC", ""))
 
         RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+        AUDIO_RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
 
         self._build_ui()
         if IS_WINDOWS:
@@ -595,12 +597,12 @@ class RecorderApp:
         now = datetime.now()
         stamp = now.strftime('%Y-%m-%d_%H-%M-%S')
         name = f"recording_{stamp}.mp3"
-        path = RECORDINGS_DIR / name
+        path = AUDIO_RECORDINGS_DIR / name
 
         # Guarantee no overwrite
         n = 1
         while path.exists():
-            path = RECORDINGS_DIR / (
+            path = AUDIO_RECORDINGS_DIR / (
                 f"recording_{stamp}_{n}.mp3"
             )
             n += 1
@@ -652,7 +654,7 @@ class RecorderApp:
     def _on_pick_recording(self) -> None:
         selected = filedialog.askopenfilename(
             title="Select Recording",
-            initialdir=str(RECORDINGS_DIR),
+            initialdir=str(AUDIO_RECORDINGS_DIR),
             filetypes=[
                 ("Audio files", "*.mp3 *.wav *.m4a *.flac *.ogg"),
                 ("All files", "*.*"),
