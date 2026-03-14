@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-recorder_app.py – Linux desktop GUI for audio recording + LLM summarization.
+recorder_app.py – Desktop GUI for audio recording + LLM summarization.
 
-Records mic + desktop audio via ffmpeg/PulseAudio, mixed into a single mono
-MP3.  After recording, summarize the audio using the existing Ollama-based
+On Linux, records mic + desktop audio via ffmpeg/PulseAudio into a single mono
+MP3. On Windows, records the selected microphone input via FFmpeg DirectShow.
+After recording, summarizes the audio using the existing Ollama-based
 transcription + summarization pipeline.
 
 Requirements:
@@ -14,8 +15,8 @@ Requirements:
   - WhisperX + pyannote.audio                      — for transcription
 
 Environment variables (all optional):
-  RECORDER_MIC       – PulseAudio source for microphone
-  RECORDER_MONITOR   – PulseAudio source for desktop audio monitor
+    RECORDER_MIC       – PulseAudio source for microphone (Linux override)
+    RECORDER_MONITOR   – PulseAudio source for desktop audio monitor (Linux override)
   RECORDER_OUTPUT_DIR – directory for recordings  (default: ~/recordings)
 
 Usage:
@@ -34,7 +35,14 @@ import time
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-from tkinter import messagebox, scrolledtext
+from tkinter import filedialog, messagebox, scrolledtext, ttk
+
+from transcriptor_bot.ffmpeg import (
+    detect_linux_pulse_devices,
+    ensure_ffmpeg_on_path,
+    list_pulseaudio_sources,
+    list_windows_dshow_audio_devices,
+)
 
 
 # ── Load .env into os.environ (no python-dotenv dependency) ─────────────────
@@ -63,19 +71,21 @@ def _load_dotenv(path: Path | None = None) -> None:
 
 _load_dotenv()
 
+FFMPEG_EXECUTABLE = ensure_ffmpeg_on_path()
+IS_WINDOWS = sys.platform.startswith("win")
+DEFAULT_MIC_DEVICE, DEFAULT_DESKTOP_MONITOR = detect_linux_pulse_devices()
+
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
 MIC_DEVICE = os.environ.get(
     "RECORDER_MIC",
-    "alsa_input.usb-Logitech_G522_LIGHTSPEED_-_"
-    "Wireless_Mode_0000000000000000-00.mono-fallback",
+    DEFAULT_MIC_DEVICE,
 )
 
 DESKTOP_MONITOR = os.environ.get(
     "RECORDER_MONITOR",
-    "alsa_output.usb-Logitech_G522_LIGHTSPEED_-_"
-    "Wireless_Mode_0000000000000000-00.analog-stereo.monitor",
+    DEFAULT_DESKTOP_MONITOR,
 )
 
 RECORDINGS_DIR = Path(
@@ -146,10 +156,13 @@ class RecorderApp:
         # Speaker settings
         self._min_speakers_var = tk.IntVar(value=2)
         self._max_speakers_var = tk.IntVar(value=3)
+        self._mic_device_var = tk.StringVar(value=os.environ.get("RECORDER_MIC", ""))
 
         RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
 
         self._build_ui()
+        if IS_WINDOWS:
+            self._refresh_windows_audio_devices(initial=True)
         self._apply_state(State.IDLE)
         self._poll_queue()
 
@@ -285,6 +298,51 @@ class RecorderApp:
             )
             sb.pack(side=tk.LEFT, padx=(0, 14))
 
+        if IS_WINDOWS:
+            audio = tk.Frame(body, bg=_C["surface"], padx=14, pady=10)
+            audio.pack(fill=tk.X, pady=(0, 10))
+
+            tk.Label(
+                audio, text="Microphone", bg=_C["surface"], fg=_C["fg_dim"],
+                font=("sans-serif", 9),
+            ).pack(anchor=tk.W)
+
+            row = tk.Frame(audio, bg=_C["surface"])
+            row.pack(fill=tk.X, pady=(6, 0))
+
+            self._mic_combo = ttk.Combobox(
+                row,
+                textvariable=self._mic_device_var,
+                state="normal",
+                width=62,
+            )
+            self._mic_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+            self._btn_refresh_audio = self._make_btn(
+                row,
+                "Refresh",
+                self._refresh_windows_audio_devices,
+                _C["blue"],
+                _C["blue_hv"],
+                width=10,
+                pady=7,
+            )
+            self._btn_refresh_audio.pack(side=tk.LEFT, padx=(8, 0))
+
+            self._audio_hint_var = tk.StringVar(
+                value="Choose the FFmpeg microphone name shown by Windows."
+            )
+            tk.Label(
+                audio,
+                textvariable=self._audio_hint_var,
+                bg=_C["surface"],
+                fg=_C["fg_dim"],
+                font=("sans-serif", 9),
+                justify=tk.LEFT,
+                anchor=tk.W,
+                wraplength=780,
+            ).pack(fill=tk.X, pady=(6, 0))
+
         # ── File path ───────────────────────────────────────────────────
         self._file_var = tk.StringVar()
         tk.Label(
@@ -293,6 +351,20 @@ class RecorderApp:
             font=("monospace", 9), anchor=tk.W,
             wraplength=820, justify=tk.LEFT,
         ).pack(fill=tk.X, pady=(0, 6))
+
+        pick = tk.Frame(body, bg=_C["bg"])
+        pick.pack(fill=tk.X, pady=(0, 8))
+        self._btn_pick_recording = self._make_btn(
+            pick,
+            "📂  Select Recording to Summarize",
+            self._on_pick_recording,
+            _C["blue"],
+            _C["blue_hv"],
+            width=28,
+            font=("sans-serif", 10, "bold"),
+            pady=7,
+        )
+        self._btn_pick_recording.pack(side=tk.LEFT)
 
         # ── Summarize button (shown only when stopped) ───────────────────
         self._sum_frame = tk.Frame(body, bg=_C["bg"])
@@ -341,9 +413,25 @@ class RecorderApp:
         smz = state == State.SUMMARIZING
 
         self._set_btn(self._btn_start,  idle or stp,  _C["green"],  _C["green_hv"])
-        self._set_btn(self._btn_pause,  rec,           _C["amber"],  _C["amber_hv"])
-        self._set_btn(self._btn_resume, pau,           _C["blue"],   _C["blue_hv"])
+        self._set_btn(self._btn_pause,  rec and not IS_WINDOWS, _C["amber"],  _C["amber_hv"])
+        self._set_btn(self._btn_resume, pau and not IS_WINDOWS, _C["blue"],   _C["blue_hv"])
         self._set_btn(self._btn_stop,   rec or pau,    _C["red"],    _C["red_hv"])
+        pick_enabled = state in (State.IDLE, State.STOPPED)
+        self._set_btn(
+            self._btn_pick_recording,
+            pick_enabled,
+            _C["blue"],
+            _C["blue_hv"],
+        )
+        if IS_WINDOWS and hasattr(self, "_btn_refresh_audio"):
+            refresh_enabled = state in (State.IDLE, State.STOPPED)
+            self._set_btn(
+                self._btn_refresh_audio,
+                refresh_enabled,
+                _C["blue"],
+                _C["blue_hv"],
+            )
+            self._mic_combo.config(state="normal" if refresh_enabled else "disabled")
 
         # Timer colour
         if rec:
@@ -397,29 +485,132 @@ class RecorderApp:
 
     # ── Recording controls ───────────────────────────────────────────────
 
+    def _validate_linux_audio_sources(self) -> None:
+        if IS_WINDOWS:
+            return
+
+        missing_variables: list[str] = []
+        if not MIC_DEVICE:
+            missing_variables.append("RECORDER_MIC")
+        if not DESKTOP_MONITOR:
+            missing_variables.append("RECORDER_MONITOR")
+
+        available_sources = list_pulseaudio_sources()
+        if missing_variables:
+            lines = [
+                "Linux recording requires PulseAudio sources for microphone and desktop monitor.",
+                f"Missing: {', '.join(missing_variables)}.",
+            ]
+            if available_sources:
+                lines.append("Available PulseAudio sources:")
+                lines.extend(f"- {source}" for source in available_sources)
+            else:
+                lines.append("No PulseAudio sources were discovered. Check that PulseAudio/PipeWire is running.")
+            raise ValueError("\n".join(lines))
+
+        unavailable_sources = [
+            source
+            for source in (MIC_DEVICE, DESKTOP_MONITOR)
+            if available_sources and source not in available_sources
+        ]
+        if unavailable_sources:
+            lines = [
+                "Configured PulseAudio sources were not found.",
+                *[f"- {source}" for source in unavailable_sources],
+                "Available PulseAudio sources:",
+                *[f"- {source}" for source in available_sources],
+            ]
+            raise ValueError("\n".join(lines))
+
+    def _refresh_windows_audio_devices(self, initial: bool = False) -> None:
+        devices = list_windows_dshow_audio_devices()
+        self._mic_combo["values"] = devices
+
+        current_value = self._mic_device_var.get().strip()
+        if current_value and current_value in devices:
+            selected = current_value
+        elif devices:
+            selected = devices[0]
+            if initial and MIC_DEVICE in devices:
+                selected = MIC_DEVICE
+        else:
+            selected = current_value
+
+        self._mic_device_var.set(selected)
+
+        if devices:
+            self._audio_hint_var.set(
+                "Select the microphone used for recording. System audio capture is not auto-configured on Windows."
+            )
+            if not initial:
+                self._append(f"🔄  Found {len(devices)} Windows audio input(s).\n")
+        else:
+            self._audio_hint_var.set(
+                "No DirectShow audio inputs were found. Check whether the microphone is connected and enabled in Windows."
+            )
+            if not initial:
+                self._append("⚠  No Windows audio inputs were found by FFmpeg.\n")
+
+    def _build_recording_command(self, output_path: Path) -> list[str]:
+        if IS_WINDOWS:
+            mic_device = self._mic_device_var.get().strip()
+            if not mic_device:
+                raise ValueError("Select a microphone before starting the recording.")
+            return [
+                FFMPEG_EXECUTABLE,
+                "-f", "dshow",
+                "-i", f"audio={mic_device}",
+                "-ac", "1",
+                "-q:a", "2",
+                str(output_path),
+            ]
+
+        self._validate_linux_audio_sources()
+        return [
+            FFMPEG_EXECUTABLE,
+            "-f", "pulse", "-i", MIC_DEVICE,
+            "-f", "pulse", "-i", DESKTOP_MONITOR,
+            "-filter_complex", "amerge=inputs=2",
+            "-ac", "1",
+            "-q:a", "2",
+            str(output_path),
+        ]
+
+    def _stop_ffmpeg_process(self, timeout: float = 10.0) -> None:
+        if not self._ffmpeg or self._ffmpeg.poll() is not None:
+            return
+
+        try:
+            if self._ffmpeg.stdin:
+                self._ffmpeg.stdin.write("q\n")
+                self._ffmpeg.stdin.flush()
+            self._ffmpeg.wait(timeout=timeout)
+        except (BrokenPipeError, OSError, ValueError):
+            self._ffmpeg.terminate()
+        except subprocess.TimeoutExpired:
+            self._ffmpeg.kill()
+            self._ffmpeg.wait()
+
     def _on_start(self) -> None:
         now = datetime.now()
-        name = f"recording_{now.strftime('%Y%m%d_%H%M%S')}.mp3"
+        stamp = now.strftime('%Y-%m-%d_%H-%M-%S')
+        name = f"recording_{stamp}.mp3"
         path = RECORDINGS_DIR / name
 
         # Guarantee no overwrite
         n = 1
         while path.exists():
             path = RECORDINGS_DIR / (
-                f"recording_{now.strftime('%Y%m%d_%H%M%S')}_{n}.mp3"
+                f"recording_{stamp}_{n}.mp3"
             )
             n += 1
         self._current_file = path
 
-        cmd = [
-            "ffmpeg",
-            "-f", "pulse", "-i", MIC_DEVICE,
-            "-f", "pulse", "-i", DESKTOP_MONITOR,
-            "-filter_complex", "amerge=inputs=2",
-            "-ac", "1",
-            "-q:a", "2",
-            str(self._current_file),
-        ]
+        try:
+            cmd = self._build_recording_command(self._current_file)
+        except ValueError as exc:
+            messagebox.showerror("Error", str(exc))
+            return
 
         try:
             self._ffmpeg = subprocess.Popen(
@@ -432,7 +623,7 @@ class RecorderApp:
         except FileNotFoundError:
             messagebox.showerror(
                 "Error",
-                "ffmpeg not found.\nInstall with:  sudo apt install ffmpeg",
+                "ffmpeg not found.\nRun: pip install -r requirements.txt\nor install FFmpeg system-wide.",
             )
             return
         except Exception as exc:
@@ -450,11 +641,35 @@ class RecorderApp:
         self._file_var.set(f"📁  {self._current_file}")
         self._clear_output()
         self._append(f"▶  Recording started → {self._current_file.name}\n")
+        if IS_WINDOWS:
+            self._append(f"🎤  Microphone: {self._mic_device_var.get().strip()}\n")
         self._apply_state(State.RECORDING)
         self._tick()
 
         # Schedule a check to detect early ffmpeg crash
         self.root.after(1500, self._check_ffmpeg_alive)
+
+    def _on_pick_recording(self) -> None:
+        selected = filedialog.askopenfilename(
+            title="Select Recording",
+            initialdir=str(RECORDINGS_DIR),
+            filetypes=[
+                ("Audio files", "*.mp3 *.wav *.m4a *.flac *.ogg"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not selected:
+            return
+
+        picked = Path(selected)
+        if not picked.exists() or picked.stat().st_size <= 0:
+            messagebox.showerror("Invalid file", "Selected file does not exist or is empty.")
+            return
+
+        self._current_file = picked
+        self._file_var.set(f"📁  {self._current_file}")
+        self._append(f"📂  Selected recording for summarization → {picked.name}\n")
+        self._apply_state(State.STOPPED)
 
     def _drain_ffmpeg_stderr(self) -> None:
         """Read ffmpeg stderr in background to avoid pipe-buffer deadlock."""
@@ -483,6 +698,9 @@ class RecorderApp:
             self.root.after(2000, self._check_ffmpeg_alive)
 
     def _on_pause(self) -> None:
+        if IS_WINDOWS:
+            messagebox.showinfo("Pause unavailable", "Pause/resume is not supported on Windows in this recorder yet.")
+            return
         if self._ffmpeg and self._ffmpeg.poll() is None:
             os.kill(self._ffmpeg.pid, signal.SIGSTOP)
         self._pause_mark = time.monotonic()
@@ -491,6 +709,8 @@ class RecorderApp:
         self._apply_state(State.PAUSED)
 
     def _on_resume(self) -> None:
+        if IS_WINDOWS:
+            return
         if self._ffmpeg and self._ffmpeg.poll() is None:
             os.kill(self._ffmpeg.pid, signal.SIGCONT)
         self._pause_total += time.monotonic() - self._pause_mark
@@ -500,17 +720,10 @@ class RecorderApp:
 
     def _on_stop(self) -> None:
         self._stop_tick()
-        if self._ffmpeg and self._ffmpeg.poll() is None:
-            # Resume first if paused, so ffmpeg can process SIGINT
-            if self._state == State.PAUSED:
-                os.kill(self._ffmpeg.pid, signal.SIGCONT)
-                time.sleep(0.05)
-            os.kill(self._ffmpeg.pid, signal.SIGINT)
-            try:
-                self._ffmpeg.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self._ffmpeg.kill()
-                self._ffmpeg.wait()
+        if self._ffmpeg and self._ffmpeg.poll() is None and not IS_WINDOWS and self._state == State.PAUSED:
+            os.kill(self._ffmpeg.pid, signal.SIGCONT)
+            time.sleep(0.05)
+        self._stop_ffmpeg_process(timeout=10)
         self._ffmpeg = None
 
         # Verify the file was actually saved
@@ -550,7 +763,7 @@ class RecorderApp:
         summary_dir = RECORDINGS_DIR / "summaries"
         summary_dir.mkdir(parents=True, exist_ok=True)
         summary_file = summary_dir / (
-            f"{self._current_file.stem}.meeting_summary.md"
+            f"{self._current_file.stem}.meeting_summary.txt"
         )
 
         cmd = [
@@ -587,6 +800,8 @@ class RecorderApp:
                 self._msg_q.put(("log", "  MEETING SUMMARY\n"))
                 self._msg_q.put(("log", "═" * 60 + "\n\n"))
                 self._msg_q.put(("log", text + "\n"))
+            elif proc.returncode == 0:
+                self._msg_q.put(("log", "\n✅  Transcript saved (no summary generated).\n"))
             else:
                 self._msg_q.put((
                     "log",
@@ -633,14 +848,10 @@ class RecorderApp:
             ):
                 return
         if self._ffmpeg and self._ffmpeg.poll() is None:
-            if self._state == State.PAUSED:
+            if self._state == State.PAUSED and not IS_WINDOWS:
                 os.kill(self._ffmpeg.pid, signal.SIGCONT)
                 time.sleep(0.05)
-            os.kill(self._ffmpeg.pid, signal.SIGINT)
-            try:
-                self._ffmpeg.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._ffmpeg.kill()
+            self._stop_ffmpeg_process(timeout=5)
         self.root.destroy()
 
 

@@ -11,8 +11,8 @@
 # ──────────────────────────────────────────────────────────────────────────────
 
 # --- core ASR ---
-# whisperx is not on PyPI; install from source:
-#   pip install git+https://github.com/m-bain/whisperx.git
+# whisperx is not on PyPI; install from source
+git+https://github.com/m-bain/whisperx.git
 
 # faster-whisper is pulled in by whisperx, pinned for stability
 faster-whisper>=1.0.0
@@ -21,9 +21,9 @@ faster-whisper>=1.0.0
 pyannote.audio>=3.2.0
 
 # --- audio I/O ---
-# ffmpeg-python is a thin Python wrapper; the system ffmpeg binary is also
-# needed (sudo apt install ffmpeg)
-ffmpeg-python>=0.2.0
+# imageio-ffmpeg ships a bundled FFmpeg executable, which is more useful on
+# Windows/macOS where ffmpeg is often not installed system-wide.
+imageio-ffmpeg>=0.5.1
 
 # --- ML / tensor ---
 # Torch & torchaudio are listed for reference but should be installed

@@ -22,6 +22,14 @@ DEFAULT_RUN_TIMEOUT_SECONDS = 60 * 30
 DEFAULT_FALLBACK_MODEL = "qwen3.5:4b"
 
 
+def _utf8_text_subprocess_kwargs() -> dict[str, object]:
+    return {
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+    }
+
+
 def _load_transcript_text(path: Path) -> str:
     suffix = path.suffix.lower()
     content = path.read_text(encoding="utf-8").strip()
@@ -154,7 +162,7 @@ def _check_ollama_ready() -> None:
         subprocess.run(
             ["ollama", "--version"],
             capture_output=True,
-            text=True,
+            **_utf8_text_subprocess_kwargs(),
             check=True,
             timeout=15,
         )
@@ -170,7 +178,7 @@ def _check_ollama_ready() -> None:
         subprocess.run(
             ["ollama", "list"],
             capture_output=True,
-            text=True,
+            **_utf8_text_subprocess_kwargs(),
             check=True,
             timeout=20,
         )
@@ -192,7 +200,7 @@ def _ensure_model_available(model: str, auto_pull: bool, pull_timeout_seconds: i
         subprocess.run(
             ["ollama", "show", model],
             capture_output=True,
-            text=True,
+            **_utf8_text_subprocess_kwargs(),
             check=True,
             timeout=30,
         )
@@ -209,7 +217,7 @@ def _ensure_model_available(model: str, auto_pull: bool, pull_timeout_seconds: i
         subprocess.run(
             ["ollama", "pull", model],
             check=True,
-            text=True,
+            **_utf8_text_subprocess_kwargs(),
             timeout=pull_timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
@@ -232,8 +240,8 @@ def _run_model_once(
         result = subprocess.run(
             ["ollama", "run", model],
             input=prompt,
-            text=True,
             capture_output=True,
+            **_utf8_text_subprocess_kwargs(),
             check=True,
             timeout=run_timeout_seconds,
         )
@@ -264,8 +272,8 @@ def _run_model_once(
                 cpu_result = subprocess.run(
                     ["ollama", "run", model],
                     input=prompt,
-                    text=True,
                     capture_output=True,
+                    **_utf8_text_subprocess_kwargs(),
                     check=True,
                     timeout=run_timeout_seconds,
                     env=cpu_env,

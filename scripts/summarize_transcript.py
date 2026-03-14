@@ -9,7 +9,7 @@ Example
 -------
 python scripts/summarize_transcript.py \
     --transcript recordings/transcripts/meeting-123.speaker_transcript.txt \
-    --out recordings/summaries/meeting-123-summary.md
+    --out recordings/summaries/meeting-123-summary.txt
 """
 
 from __future__ import annotations
@@ -53,6 +53,21 @@ def _fallback_turns_from_segments(segments: list[dict]) -> list[dict]:
     return turns
 
 
+def _is_pyannote_auth_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    markers = (
+        "401",
+        "access denied",
+        "gated repo",
+        "cannot access gated repo",
+        "accept the model licence",
+        "accept user conditions",
+        "please log in",
+        "restricted",
+    )
+    return any(marker in msg for marker in markers)
+
+
 def _transcribe_audio_to_local_transcript(
     audio_path: Path,
     transcripts_dir: Path,
@@ -70,9 +85,10 @@ def _transcribe_audio_to_local_transcript(
 
     log = logging.getLogger("summarize_transcript.transcribe")
 
-    hf_token = _get_env("HF_TOKEN", required=True)
+    hf_token = _get_env("HF_TOKEN", required=False)
     model_size = _get_env("WHISPER_MODEL", "large-v3-turbo")
-    device = _get_env("DEVICE", "cuda")
+    default_device = "cpu" if os.name == "nt" else "cuda"
+    device = _get_env("DEVICE", default_device)
     compute_type = _get_env("COMPUTE_TYPE", "float16")
     language = _get_env("WHISPER_LANGUAGE", "pt")
     batch_size = int(_get_env("BATCH_SIZE", "16"))
@@ -90,17 +106,32 @@ def _transcribe_audio_to_local_transcript(
     if not whisperx_result.get("segments"):
         raise RuntimeError("No speech was detected in the audio.")
 
-    log.info("Step 2/3 – Speaker diarization")
-    diarization, _ = run_pyannote_diarization(
-        audio_path=str(audio_path),
-        hf_token=hf_token,
-        min_speakers=min_speakers,
-        max_speakers=max_speakers,
-    )
+    diarization = None
+    if hf_token:
+        log.info("Step 2/3 – Speaker diarization")
+        try:
+            diarization, _ = run_pyannote_diarization(
+                audio_path=str(audio_path),
+                hf_token=hf_token,
+                min_speakers=min_speakers,
+                max_speakers=max_speakers,
+            )
+        except Exception as exc:
+            if _is_pyannote_auth_error(exc):
+                log.warning(
+                    "pyannote diarization not authorized; continuing without speaker diarization. "
+                    "Accept model licences on Hugging Face and set HF_TOKEN to enable speaker labels."
+                )
+            else:
+                raise
+    else:
+        log.warning(
+            "HF_TOKEN not set; skipping diarization and continuing with UNKNOWN speaker labels."
+        )
 
     log.info("Step 3/3 – Build speaker transcript")
     word_segments = whisperx_result.get("word_segments", [])
-    if word_segments:
+    if word_segments and diarization is not None:
         assigned_words = assign_words_to_speakers(word_segments=word_segments, diarization=diarization)
         turns = build_speaker_turns(assigned_words)
     else:
@@ -250,7 +281,7 @@ def main(argv: list[str] | None = None) -> int:
         summaries_dir = Path("recordings/summaries").resolve()
         summaries_dir.mkdir(parents=True, exist_ok=True)
         stem = transcript_path.stem.replace(".speaker_transcript", "")
-        output_path = summaries_dir / f"{stem}.meeting_summary.md"
+        output_path = summaries_dir / f"{stem}.meeting_summary.txt"
 
     try:
         summarize_transcript_with_ollama(
@@ -265,7 +296,33 @@ def main(argv: list[str] | None = None) -> int:
             allow_cpu_fallback=not args.no_cpu_fallback,
         )
     except Exception as exc:
-        logging.getLogger("summarize_transcript").error("Failed to generate summary: %s", exc)
+        log = logging.getLogger("summarize_transcript")
+        exc_str = str(exc)
+        ollama_unavailable_markers = (
+            "não está instalado",
+            "not installed",
+            "não está em execução",
+            "not running",
+            "ollama serve",
+            "https://ollama.com/download",
+        )
+        if any(m in exc_str.lower() for m in ollama_unavailable_markers):
+            log.warning("Ollama is unavailable – transcript saved but summary skipped. %s", exc)
+            # Write a placeholder summary so the UI shows something useful.
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(
+                "Summary unavailable - Ollama not installed\n\n"
+                f"{exc}\n\n"
+                "Transcript was saved successfully. To generate a summary:\n\n"
+                "1. Install Ollama from https://ollama.com/download\n"
+                "2. Start Ollama (`ollama serve`)\n"
+                f"3. Re-run: `python scripts/summarize_transcript.py "
+                f"--transcript \"{transcript_path}\"`\n",
+                encoding="utf-8",
+            )
+            # Return 0 – transcript pipeline succeeded; summary is optional.
+            return 0
+        log.error("Failed to generate summary: %s", exc)
         return 1
 
     return 0

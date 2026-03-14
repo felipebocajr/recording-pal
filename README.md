@@ -1,6 +1,10 @@
 # Meeting Recorder & Summarizer
 
-A Linux desktop app for **recording meetings, speaker-diarized transcription, and LLM summarization** — all from a single GUI window.
+A desktop app for **recording meetings, speaker-diarized transcription, and LLM summarization** — all from a single GUI window.
+
+Platform status:
+- Linux: mic + desktop audio mixed recording (PulseAudio).
+- Windows: microphone recording supported from the GUI device picker (desktop/system audio requires extra setup such as Stereo Mix or virtual cable).
 
 Core pipeline:
 [ffmpeg + PulseAudio](https://ffmpeg.org/) (audio capture) →
@@ -10,36 +14,56 @@ Core pipeline:
 
 | Artifact | Description |
 |---|---|
-| `recording_YYYYMMDD_HHMMSS.mp3` | Mixed mic + desktop audio recording |
+| `recording_YYYY-MM-DD_HH-MM-SS.mp3` | Recorded audio file |
 | `*.speaker_transcript.txt` | Human-readable, speaker-labelled transcript |
 | `*.speaker_transcript.json` | Machine-readable list of speaker turns |
-| `*.meeting_summary.md` | LLM-generated structured meeting summary |
+| `*.meeting_summary.txt` | LLM-generated structured meeting summary |
 
 ---
 
 ## Prerequisites
 
-### System packages
+### Linux system packages
 
 ```bash
 sudo apt install ffmpeg pulseaudio python3-tk
 ```
 
-### Python environment
+### Python environment (Linux/macOS)
 
 ```bash
 # Create & activate venv
-python3 -m venv venv && source venv/bin/activate
+python3 -m venv venv
+source venv/bin/activate
 
 # Install Python deps
 pip install -r requirements.txt
-pip install git+https://github.com/m-bain/whisperx.git
 
-# For GPU (CUDA 11.8 example):
+# Optional GPU (CUDA 11.8 example)
 # pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
-# For CPU only:
-# pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 ```
+
+### Python environment (Windows PowerShell)
+
+```powershell
+# Create venv
+py -m venv venv
+
+# Activate (current shell only)
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\venv\Scripts\Activate.ps1
+
+# If policy is blocked, use:
+# .\venv\Scripts\activate.bat
+
+# Install Python deps
+python -m pip install -r requirements.txt
+```
+
+### Windows notes
+
+- Recording in the app does not require system ffmpeg if `imageio-ffmpeg` is installed from `requirements.txt`.
+- For best compatibility with Hugging Face model cache downloads, run a normal local profile path (default `C:\Users\<you>`) and keep enough free disk space.
 
 ### Ollama (for LLM summarization)
 
@@ -62,10 +86,14 @@ ollama pull qwen3.5:4b
 3. Accept the licence for **both** models (one-time, free):
    - <https://huggingface.co/pyannote/speaker-diarization-3.1>
    - <https://huggingface.co/pyannote/segmentation-3.0>
-4. Export the token before launching the app:
+4. Set the token before launching the app:
 
 ```bash
 export HF_TOKEN=hf_your_token_here
+```
+
+```powershell
+$env:HF_TOKEN="hf_your_token_here"
 ```
 
 ---
@@ -76,18 +104,21 @@ export HF_TOKEN=hf_your_token_here
 python recorder_app.py
 ```
 
+```powershell
+python recorder_app.py
+```
+
 ---
 
 ## Audio Device Configuration
 
-The app defaults to the following PulseAudio devices (Logitech G522 headset):
+### Linux (PulseAudio)
 
-| Source | Default device name |
-|---|---|
-| Microphone | `alsa_input.usb-Logitech_G522_LIGHTSPEED_-_Wireless_Mode_0000000000000000-00.mono-fallback` |
-| Desktop monitor | `alsa_output.usb-Logitech_G522_LIGHTSPEED_-_Wireless_Mode_0000000000000000-00.analog-stereo.monitor` |
+The app attempts to auto-detect one microphone source and one desktop monitor
+source from `pactl list sources short`.
 
-To use different devices, set environment variables before launching:
+If auto-detection picks the wrong sources or cannot find them, set environment
+variables before launching:
 
 ```bash
 export RECORDER_MIC="your_pulseaudio_source_name"
@@ -101,6 +132,15 @@ Find your device names with:
 pactl list sources short
 ```
 
+The microphone source usually does not end with `.monitor`, while desktop audio
+capture usually does.
+
+### Windows (DirectShow)
+
+- Use the in-app **Microphone** dropdown and click **Refresh** to list available devices.
+- The selected device is used when you press **Start**.
+- `RECORDER_MIC` can still be set manually, but UI selection is recommended on Windows.
+
 ---
 
 ## Recording Controls
@@ -108,8 +148,8 @@ pactl list sources short
 | Button | Available in | Action |
 |---|---|---|
 | **Start** | Idle / Stopped | Launches `ffmpeg`, begins recording mic + desktop mixed to mono MP3 |
-| **Pause** | Recording | Sends `SIGSTOP` to freeze ffmpeg (timer stops) |
-| **Resume** | Paused | Sends `SIGCONT` to continue recording |
+| **Pause** | Recording | Linux: pauses ffmpeg. Windows: not available in current implementation. |
+| **Resume** | Paused | Linux: resumes ffmpeg. Windows: not available in current implementation. |
 | **Stop** | Recording / Paused | Sends `SIGINT` for graceful shutdown; saves file |
 | **Summarize** | Stopped | Runs the full transcription + LLM summary pipeline on the recording |
 
@@ -135,8 +175,10 @@ Idle ──Start──▶ Recording ──Pause──▶ Paused
 Recordings are saved to `~/recordings/` (or `RECORDER_OUTPUT_DIR`) with the format:
 
 ```
-recording_YYYYMMDD_HHMMSS.mp3
+recording_YYYY-MM-DD_HH-MM-SS.mp3
 ```
+
+On Windows, the default resolves to `C:\Users\<you>\recordings`.
 
 After clicking **Summarize**, the app:
 1. Transcribes the audio with WhisperX + diarizes with pyannote (requires `HF_TOKEN`).
@@ -156,17 +198,17 @@ You can also run the summarization pipeline directly from the command line:
 ```bash
 python scripts/summarize_transcript.py \
    --transcript recordings/transcripts/<your-file>.speaker_transcript.txt \
-   --out recordings/summaries/meeting-summary.md
+   --out recordings/summaries/meeting-summary.txt
 ```
 
 ### From an audio file (transcribe + diarize + summarize)
 
 ```bash
 python scripts/summarize_transcript.py \
-   --audio recordings/recording_20260313_150000.mp3 \
+   --audio recordings/recording_2026-03-13_15-00-00.mp3 \
    --min-speakers 1 \
    --max-speakers 3 \
-   --out recordings/summaries/meeting-summary.md
+   --out recordings/summaries/meeting-summary.txt
 ```
 
 ### Custom model
@@ -175,7 +217,7 @@ python scripts/summarize_transcript.py \
 python scripts/summarize_transcript.py \
    --transcript <file> \
    --model <your-ollama-model-tag> \
-   --out recordings/summaries/meeting-summary.md
+   --out recordings/summaries/meeting-summary.txt
 ```
 
 Default: `hf.co/unsloth/Qwen3.5-9B-GGUF:Q4_K_M` → fallback: `qwen3.5:4b`
@@ -233,4 +275,6 @@ Transcriptor-bot/
 | `ffmpeg not found` | `sudo apt install ffmpeg` |
 | `_tkinter` / `python3-tk` import error | `sudo apt install python3-tk` |
 | ffmpeg exits immediately after Start | Wrong PulseAudio device name — run `pactl list sources short` and set `RECORDER_MIC` / `RECORDER_MONITOR` env vars |
-| WhisperX import error | `pip install git+https://github.com/m-bain/whisperx.git` |
+| PowerShell blocks venv activation | `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` then `.\venv\Scripts\Activate.ps1` |
+| WhisperX import error | Run `python -m pip install -r requirements.txt` inside the active venv |
+| Hugging Face cache `WinError 1314` on Windows | Enable Developer Mode in Windows or run elevated once; then retry summary |

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -22,19 +23,43 @@ logger = logging.getLogger(__name__)
 # SPEAKER <file_id> 1 <start> <duration> <NA> <NA> <speaker_label> <NA> <NA>
 _RTTM_TEMPLATE = "SPEAKER {file_id} 1 {start:.3f} {duration:.3f} <NA> <NA> {speaker} <NA> <NA>"
 
+_PYANNOTE_SAMPLE_RATE = 16_000
+
 
 def _load_audio_for_pyannote(audio_path: str) -> dict:
-    """Load audio into memory for pyannote when built-in decoding is unavailable."""
+    """Decode audio with ffmpeg subprocess and return a dict pyannote accepts.
+
+    pyannote supports: ``{'waveform': (channels, time) float32 Tensor, 'sample_rate': int}``
+    This bypasses torchaudio/torchcodec entirely on Windows where those backends
+    require FFmpeg shared DLLs that are not present.
+    """
+    import numpy as np
+    import torch
+
+    from .ffmpeg import ensure_ffmpeg_on_path
+
+    ffmpeg_executable = ensure_ffmpeg_on_path()
+    cmd = [
+        ffmpeg_executable,
+        "-nostdin",
+        "-threads", "0",
+        "-i", audio_path,
+        "-f", "s16le",
+        "-ac", "1",
+        "-acodec", "pcm_s16le",
+        "-ar", str(_PYANNOTE_SAMPLE_RATE),
+        "-",
+    ]
     try:
-        import torchaudio
-    except ImportError as exc:
+        out = subprocess.run(cmd, capture_output=True, check=True).stdout
+    except subprocess.CalledProcessError as exc:
         raise RuntimeError(
-            "pyannote could not decode audio and torchaudio is unavailable for fallback loading. "
-            "Install torchaudio or fix torchcodec."
+            f"ffmpeg failed to decode '{audio_path}': {exc.stderr.decode(errors='replace')}"
         ) from exc
 
-    waveform, sample_rate = torchaudio.load(audio_path)
-    return {"waveform": waveform, "sample_rate": sample_rate}
+    samples = np.frombuffer(out, np.int16).astype(np.float32) / 32768.0
+    waveform = torch.from_numpy(samples).unsqueeze(0)  # shape: (1, time)
+    return {"waveform": waveform, "sample_rate": _PYANNOTE_SAMPLE_RATE}
 
 
 def _get_annotation_from_output(diarization: object) -> object:
@@ -154,18 +179,33 @@ def run_pyannote_diarization(
         min_speakers,
         max_speakers,
     )
+    # Always pre-load audio via ffmpeg so pyannote never needs torchaudio/torchcodec.
+    # This sidesteps Windows FFmpeg DLL issues in torio/torchcodec entirely.
+    try:
+        audio_input = _load_audio_for_pyannote(audio_path)
+        logger.debug("Audio pre-loaded via ffmpeg for pyannote (%d samples).", audio_input["waveform"].shape[-1])
+    except Exception as exc:
+        logger.warning("ffmpeg audio pre-load failed (%s); passing raw path to pyannote.", exc)
+        audio_input = audio_path
+
     try:
         diarization = pipeline(
-            audio_path,
+            audio_input,
             min_speakers=min_speakers,
             max_speakers=max_speakers,
         )
-    except NameError as exc:
-        if "AudioDecoder" not in str(exc):
+    except (NameError, RuntimeError) as exc:
+        exc_str = str(exc)
+        # If we passed a waveform dict and still got an error, re-raise
+        if not isinstance(audio_input, str):
             raise
-
+        # Fallback: try with pre-loaded audio when file-path approach fails
+        backend_keywords = ("AudioDecoder", "backend", "torchcodec", "torchaudio", "ffmpeg")
+        if not any(kw.lower() in exc_str.lower() for kw in backend_keywords):
+            raise
         logger.warning(
-            "pyannote built-in audio decoding is unavailable; retrying with torchaudio fallback."
+            "pyannote audio decoding failed with file path ('%s'); retrying with pre-loaded waveform.",
+            exc,
         )
         diarization = pipeline(
             _load_audio_for_pyannote(audio_path),
