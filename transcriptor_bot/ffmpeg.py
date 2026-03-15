@@ -68,11 +68,65 @@ def list_pulseaudio_sources() -> list[str]:
     return sources
 
 
+def _get_default_sink_name() -> str:
+    """Return the PulseAudio default sink name, or empty string on failure."""
+    proc = subprocess.run(
+        ["pactl", "info"],
+        capture_output=True,
+        check=False,
+        **_text_subprocess_kwargs(),
+    )
+    for line in proc.stdout.splitlines():
+        if line.startswith("Default Sink:"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def _score_mic_source(name: str) -> int:
+    """Return a lower-is-better priority score for a PulseAudio mic source.
+
+    Scoring rules (lower = preferred):
+    - ``mono-fallback``      → 0  (most reliable for USB headsets / gaming mics)
+    - ``input`` or ``analog-stereo`` input sources → 1
+    - Any other non-monitor source                 → 2
+    - Monitor sources (should never be mic)        → 99
+    """
+    n = name.lower()
+    if ".monitor" in n:
+        return 99
+    if "mono-fallback" in n:
+        return 0
+    if "input" in n or ("analog" in n and "output" not in n):
+        return 1
+    return 2
+
+
 def detect_linux_pulse_devices() -> tuple[str, str]:
-    """Return best-effort `(mic_source, monitor_source)` defaults on Linux."""
+    """Return best-effort ``(mic_source, monitor_source)`` defaults on Linux.
+
+    Mic selection priority (via :func:`_score_mic_source`):
+    1. ``mono-fallback`` sources (most reliable for USB / gaming headsets).
+    2. Other ``input`` / ``analog`` non-monitor sources.
+    3. Any remaining non-monitor source.
+
+    Monitor selection priority:
+    1. ``<default-sink>.monitor`` — the monitor of whatever the user hears.
+    2. Any other source whose name ends with ``.monitor``.
+    3. Empty string (no monitor found).
+    """
     sources = list_pulseaudio_sources()
-    mic_source = next((source for source in sources if not source.endswith(".monitor")), "")
-    monitor_source = next((source for source in sources if source.endswith(".monitor")), "")
+    non_monitor = [s for s in sources if ".monitor" not in s]
+    mic_source = min(non_monitor, key=_score_mic_source) if non_monitor else ""
+
+    default_sink = _get_default_sink_name()
+    monitor_source = ""
+    if default_sink:
+        preferred = f"{default_sink}.monitor"
+        if preferred in sources:
+            monitor_source = preferred
+    if not monitor_source:
+        monitor_source = next((s for s in sources if s.endswith(".monitor")), "")
+
     return mic_source, monitor_source
 
 

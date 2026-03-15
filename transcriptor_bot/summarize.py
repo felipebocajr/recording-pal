@@ -259,6 +259,7 @@ def _run_model_once(
             "unable to allocate cuda" in lower_stderr
             or "cuda" in lower_stderr and "failed to load model" in lower_stderr
             or "out of memory" in lower_stderr and "cuda" in lower_stderr
+            or "unable to load model" in lower_stderr  # Ollama 500 when VRAM too small
         )
 
         if allow_cpu_fallback and gpu_oom:

@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import os
 import logging
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -157,6 +158,66 @@ def _transcribe_audio_to_local_transcript(
     return txt_path
 
 
+def _transcribe_audio_in_subprocess(
+    audio_path: Path,
+    transcripts_dir: Path,
+    min_speakers: int,
+    max_speakers: int,
+    verbose: bool = False,
+) -> Path:
+    """Run transcription in a child process so its CUDA context is fully released
+    (including the PyTorch allocator memory) before Ollama tries to load the LLM.
+
+    The child runs this same script with ``--_transcribe-only``, prints the
+    resulting transcript path prefixed by ``TRANSCRIPT_PATH:``, then exits.
+    When the child exits the OS reclaims its entire CUDA context, giving Ollama
+    a clean GPU.
+    """
+    log = logging.getLogger("summarize_transcript.transcribe_subprocess")
+    cmd = [
+        sys.executable,
+        __file__,
+        "--audio", str(audio_path),
+        "--transcripts-dir", str(transcripts_dir),
+        "--min-speakers", str(min_speakers),
+        "--max-speakers", str(max_speakers),
+        "--_transcribe-only",
+    ]
+    if verbose:
+        cmd.append("-v")
+
+    log.info(
+        "Launching transcription subprocess to isolate CUDA context from Ollama …"
+    )
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,  # merge so caller (recorder_app) sees all logs
+        text=True,
+    )
+    assert proc.stdout is not None
+    transcript_path: Path | None = None
+    for line in iter(proc.stdout.readline, ""):
+        if line.startswith("TRANSCRIPT_PATH:"):
+            transcript_path = Path(line[len("TRANSCRIPT_PATH:"):].strip())
+        else:
+            # re-emit so the line appears in the parent's log stream
+            sys.stderr.write(line)
+            sys.stderr.flush()
+    proc.wait()
+
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"Transcription subprocess exited with code {proc.returncode}."
+        )
+    if transcript_path is None:
+        raise RuntimeError(
+            "Transcription subprocess finished but did not report a transcript path."
+        )
+    log.info("Transcription subprocess finished – CUDA memory released.")
+    return transcript_path
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Summarize a speaker transcript with Ollama local model.",
@@ -237,6 +298,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--min-speakers", type=int, default=2, metavar="N", help="Min speakers for diarization.")
     parser.add_argument("--max-speakers", type=int, default=3, metavar="N", help="Max speakers for diarization.")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logs.")
+    # Internal flag: run only the transcription step, emit TRANSCRIPT_PATH:<path>, then exit.
+    # Used by _transcribe_audio_in_subprocess() to isolate CUDA context from Ollama.
+    parser.add_argument("--_transcribe-only", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
@@ -253,8 +317,10 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     _setup_logging(args.verbose)
 
-    transcript_path: Path
-    if args.audio:
+    # ── Internal transcribe-only mode ──────────────────────────────────────────
+    # Called by _transcribe_audio_in_subprocess(); run transcription, print path,
+    # exit.  The caller (parent process) reclaims the CUDA context when we exit.
+    if getattr(args, "_transcribe_only", False):
         audio_path = Path(args.audio).expanduser().resolve()
         if not audio_path.exists():
             logging.getLogger("summarize_transcript").error("Audio file not found: %s", audio_path)
@@ -265,6 +331,27 @@ def main(argv: list[str] | None = None) -> int:
                 transcripts_dir=Path(args.transcripts_dir).expanduser().resolve(),
                 min_speakers=args.min_speakers,
                 max_speakers=args.max_speakers,
+            )
+        except Exception as exc:
+            logging.getLogger("summarize_transcript").error("Transcription failed: %s", exc)
+            return 1
+        # Special token the parent process scans for
+        print(f"TRANSCRIPT_PATH:{transcript_path}")
+        return 0
+
+    transcript_path: Path
+    if args.audio:
+        audio_path = Path(args.audio).expanduser().resolve()
+        if not audio_path.exists():
+            logging.getLogger("summarize_transcript").error("Audio file not found: %s", audio_path)
+            return 1
+        try:
+            transcript_path = _transcribe_audio_in_subprocess(
+                audio_path=audio_path,
+                transcripts_dir=Path(args.transcripts_dir).expanduser().resolve(),
+                min_speakers=args.min_speakers,
+                max_speakers=args.max_speakers,
+                verbose=args.verbose,
             )
         except Exception as exc:
             logging.getLogger("summarize_transcript").error("Failed during audio transcription stage: %s", exc)

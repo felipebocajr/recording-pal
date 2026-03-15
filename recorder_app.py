@@ -158,6 +158,7 @@ class RecorderApp:
         self._min_speakers_var = tk.IntVar(value=2)
         self._max_speakers_var = tk.IntVar(value=3)
         self._mic_device_var = tk.StringVar(value=os.environ.get("RECORDER_MIC", ""))
+        self._desktop_monitor_var = tk.StringVar(value=os.environ.get("RECORDER_MONITOR", ""))
 
         RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
         AUDIO_RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -165,6 +166,8 @@ class RecorderApp:
         self._build_ui()
         if IS_WINDOWS:
             self._refresh_windows_audio_devices(initial=True)
+        else:
+            self._refresh_linux_audio_devices(initial=True)
         self._apply_state(State.IDLE)
         self._poll_queue()
 
@@ -345,6 +348,85 @@ class RecorderApp:
                 wraplength=780,
             ).pack(fill=tk.X, pady=(6, 0))
 
+        else:
+            audio = tk.Frame(body, bg=_C["surface"], padx=14, pady=10)
+            audio.pack(fill=tk.X, pady=(0, 10))
+
+            tk.Label(
+                audio, text="Audio Sources (PulseAudio)", bg=_C["surface"], fg=_C["fg_dim"],
+                font=("sans-serif", 9),
+            ).pack(anchor=tk.W)
+
+            # Microphone row
+            mic_row = tk.Frame(audio, bg=_C["surface"])
+            mic_row.pack(fill=tk.X, pady=(6, 0))
+            tk.Label(
+                mic_row, text="Mic:", bg=_C["surface"], fg=_C["fg"],
+                font=("sans-serif", 10), width=8, anchor=tk.W,
+            ).pack(side=tk.LEFT)
+            self._mic_combo = ttk.Combobox(
+                mic_row,
+                textvariable=self._mic_device_var,
+                state="normal",
+                width=56,
+            )
+            self._mic_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+            self._btn_refresh_audio = self._make_btn(
+                mic_row,
+                "Refresh",
+                self._refresh_linux_audio_devices,
+                _C["blue"],
+                _C["blue_hv"],
+                width=10,
+                pady=7,
+            )
+            self._btn_refresh_audio.pack(side=tk.LEFT, padx=(8, 0))
+
+            self._btn_linux_hints = self._make_btn(
+                mic_row,
+                "?",
+                self._show_linux_audio_hints,
+                _C["surface2"],
+                _C["border"],
+                font=("sans-serif", 11, "bold"),
+                width=2,
+                pady=7,
+                padx=4,
+            )
+            self._btn_linux_hints.pack(side=tk.LEFT, padx=(4, 0))
+
+            # Desktop monitor row (auto-detected, read-only)
+            mon_row = tk.Frame(audio, bg=_C["surface"])
+            mon_row.pack(fill=tk.X, pady=(4, 0))
+            tk.Label(
+                mon_row, text="Monitor:", bg=_C["surface"], fg=_C["fg_dim"],
+                font=("sans-serif", 10), width=8, anchor=tk.W,
+            ).pack(side=tk.LEFT)
+            self._monitor_lbl_var = tk.StringVar(value="(auto-detecting…)")
+            tk.Label(
+                mon_row,
+                textvariable=self._monitor_lbl_var,
+                bg=_C["surface"],
+                fg=_C["fg_dim"],
+                font=("monospace", 9),
+                anchor=tk.W,
+            ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+            self._audio_hint_var = tk.StringVar(
+                value="Select the PulseAudio mic source. Desktop monitor is auto-detected."
+            )
+            tk.Label(
+                audio,
+                textvariable=self._audio_hint_var,
+                bg=_C["surface"],
+                fg=_C["fg_dim"],
+                font=("sans-serif", 9),
+                justify=tk.LEFT,
+                anchor=tk.W,
+                wraplength=780,
+            ).pack(fill=tk.X, pady=(6, 0))
+
         # ── File path ───────────────────────────────────────────────────
         self._file_var = tk.StringVar()
         tk.Label(
@@ -425,7 +507,7 @@ class RecorderApp:
             _C["blue"],
             _C["blue_hv"],
         )
-        if IS_WINDOWS and hasattr(self, "_btn_refresh_audio"):
+        if hasattr(self, "_btn_refresh_audio"):
             refresh_enabled = state in (State.IDLE, State.STOPPED)
             self._set_btn(
                 self._btn_refresh_audio,
@@ -491,11 +573,14 @@ class RecorderApp:
         if IS_WINDOWS:
             return
 
+        mic = self._mic_device_var.get().strip()
+        monitor = self._desktop_monitor_var.get().strip()
+
         missing_variables: list[str] = []
-        if not MIC_DEVICE:
-            missing_variables.append("RECORDER_MIC")
-        if not DESKTOP_MONITOR:
-            missing_variables.append("RECORDER_MONITOR")
+        if not mic:
+            missing_variables.append("Microphone source")
+        if not monitor:
+            missing_variables.append("Desktop monitor source")
 
         available_sources = list_pulseaudio_sources()
         if missing_variables:
@@ -512,7 +597,7 @@ class RecorderApp:
 
         unavailable_sources = [
             source
-            for source in (MIC_DEVICE, DESKTOP_MONITOR)
+            for source in (mic, monitor)
             if available_sources and source not in available_sources
         ]
         if unavailable_sources:
@@ -523,6 +608,107 @@ class RecorderApp:
                 *[f"- {source}" for source in available_sources],
             ]
             raise ValueError("\n".join(lines))
+
+    def _refresh_linux_audio_devices(self, initial: bool = False) -> None:
+        sources = list_pulseaudio_sources()
+        if hasattr(self, "_mic_combo"):
+            self._mic_combo["values"] = sources
+
+        # Auto-select mic: scored (mono-fallback > other inputs > rest)
+        from transcriptor_bot.ffmpeg import _score_mic_source
+        mic_current = self._mic_device_var.get().strip()
+        if not mic_current or mic_current not in sources:
+            env_val = os.environ.get("RECORDER_MIC", "")
+            non_monitor = [s for s in sources if ".monitor" not in s]
+            if env_val and env_val in sources:
+                self._mic_device_var.set(env_val)
+            elif non_monitor:
+                self._mic_device_var.set(min(non_monitor, key=_score_mic_source))
+
+        # Auto-detect best monitor (default sink preferred)
+        _, best_monitor = detect_linux_pulse_devices()
+        self._desktop_monitor_var.set(best_monitor)
+        if hasattr(self, "_monitor_lbl_var"):
+            self._monitor_lbl_var.set(best_monitor or "(none found)")
+
+        if sources:
+            self._audio_hint_var.set(
+                f"{len(sources)} PulseAudio source(s) found. Select mic. Monitor: auto-detected."
+            )
+            if not initial:
+                self._append(f"🔄  Found {len(sources)} PulseAudio source(s). Monitor set to: {best_monitor or 'none'}\n")
+        else:
+            self._audio_hint_var.set(
+                "No PulseAudio sources found. Is PulseAudio/PipeWire running?"
+            )
+            if not initial:
+                self._append("⚠  No PulseAudio sources were found by the system.\n")
+
+    def _show_linux_audio_hints(self) -> None:
+        """Open a tips dialog explaining how to pick the right PulseAudio mic source."""
+        sources = list_pulseaudio_sources()
+        mic_list = "\n".join(
+            f"  • {s}" for s in sources if ".monitor" not in s
+        ) or "  (none found)"
+        monitor_list = "\n".join(
+            f"  • {s}" for s in sources if s.endswith(".monitor")
+        ) or "  (none found)"
+
+        msg = (
+            "── How to pick the right Mic source ──────────────────────\n"
+            "\n"
+            "🟢  mono-fallback  (RECOMMENDED for USB / wireless headsets)\n"
+            "    e.g.  …usb-Logitech_G522….mono-fallback\n"
+            "    PulseAudio down-mixes the device to a reliable mono stream.\n"
+            "    Use this if the stereo variant records silence or noise.\n"
+            "\n"
+            "🔵  analog-stereo / input  (built-in or line-in mics)\n"
+            "    e.g.  alsa_input.pci-….analog-stereo\n"
+            "    Good for laptop built-in mics or dedicated audio interfaces.\n"
+            "\n"
+            "🔴  Avoid .monitor sources as mic — those capture desktop audio,\n"
+            "    not microphone input. They are used automatically for the\n"
+            "    'Monitor' (desktop audio) track.\n"
+            "\n"
+            "── Available non-monitor sources ─────────────────────────\n"
+            f"{mic_list}\n"
+            "\n"
+            "── Available monitor sources (auto-used for desktop audio) ─\n"
+            f"{monitor_list}\n"
+            "\n"
+            "── Quick terminal check ───────────────────────────────────\n"
+            "  pactl list sources short\n"
+            "  (shows all sources; 'input' = mic, 'monitor' = desktop audio)"
+        )
+        top = tk.Toplevel(self.root)
+        top.title("Audio Source Hints")
+        top.configure(bg=_C["bg"])
+        top.resizable(False, False)
+        top.grab_set()
+
+        txt = scrolledtext.ScrolledText(
+            top,
+            wrap=tk.WORD,
+            font=("monospace", 10),
+            bg=_C["surface"],
+            fg=_C["fg"],
+            insertbackground=_C["fg"],
+            relief=tk.FLAT,
+            bd=0,
+            padx=14,
+            pady=12,
+            width=74,
+            height=28,
+        )
+        txt.insert(tk.END, msg)
+        txt.config(state=tk.DISABLED)
+        txt.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 4))
+
+        self._make_btn(
+            top, "Close", top.destroy,
+            _C["surface2"], _C["border"],
+            font=("sans-serif", 10), pady=6, width=10,
+        ).pack(pady=(0, 10))
 
     def _refresh_windows_audio_devices(self, initial: bool = False) -> None:
         devices = list_windows_dshow_audio_devices()
@@ -568,10 +754,12 @@ class RecorderApp:
             ]
 
         self._validate_linux_audio_sources()
+        mic = self._mic_device_var.get().strip()
+        monitor = self._desktop_monitor_var.get().strip()
         return [
             FFMPEG_EXECUTABLE,
-            "-f", "pulse", "-i", MIC_DEVICE,
-            "-f", "pulse", "-i", DESKTOP_MONITOR,
+            "-f", "pulse", "-i", mic,
+            "-f", "pulse", "-i", monitor,
             "-filter_complex", "amerge=inputs=2",
             "-ac", "1",
             "-q:a", "2",
