@@ -1,5 +1,13 @@
 # Meeting Recorder & Summarizer
 
+## Why I Built This
+
+I'm having weekly meetings for my **TCC** (final thesis / capstone project) of my bachelor's degree in **Data Science & AI**, and I needed something to record and summarize those sessions automatically.
+
+Most of the tools that do this are paid — and honestly, I wanted to build something that is truly **mine**: built my way, opinionated toward my own workflow, and able to make good use of my hardware (**RTX 3070 + R7 5700x**). So instead of paying for a subscription, I rolled my own: local audio capture, GPU-accelerated transcription with WhisperX, speaker diarization with pyannote, and LLM summarization running entirely on-device via Ollama. Zero cloud, zero fees, full control.
+
+---
+
 A Linux desktop app for **recording meetings, speaker-diarized transcription, and LLM summarization** — all from a single GUI window.
 
 Core pipeline:
